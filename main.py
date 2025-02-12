@@ -1,64 +1,6 @@
 from flask import Flask, request, jsonify, render_template
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.sql import text  # Importa la función text
-
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root:@localhost/optica'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-# Tabla intermedia para la relación muchos a muchos entre OrdenCompra y Producto
-relacion_oc_p = db.Table('relacion_oc_p',
-    db.Column('id_oc', db.Integer, db.ForeignKey('orden_compra.id'), primary_key=True),
-    db.Column('id_p', db.Integer, db.ForeignKey('producto.id'), primary_key=True)
-)
-
-# Tabla intermedia para la relación muchos a muchos entre Venta y OrdenCompra
-class RelacionVOC(db.Model):
-    __tablename__ = 'relacion_v_oc'
-    id = db.Column(db.Integer, primary_key=True)
-    id_oc = db.Column(db.Integer, db.ForeignKey('orden_compra.id'))
-    id_v = db.Column(db.Integer, db.ForeignKey('venta.id'))
-    metodo_pago = db.Column(db.Enum('Efectivo', 'Credito', 'Debito'))
-    pago_inicial = db.Column(db.Numeric(7, 2))
-    estado = db.Column(db.Boolean)
-    deuda = db.Column(db.Numeric(7, 2))
-    fecha_pago = db.Column(db.DateTime)
-
-class Sucursal(db.Model):
-    __tablename__ = 'sucursal'
-    id = db.Column(db.Integer, primary_key=True)
-    nombre = db.Column(db.String(255))
-    direccion = db.Column(db.String(255))
-    correo = db.Column(db.String(255))
-    telefono = db.Column(db.String(15))
-
-class Producto(db.Model):
-    __tablename__ = 'producto'
-    id = db.Column(db.Integer, primary_key=True)
-    tipo = db.Column(db.Enum('Oftálmico', 'Solar', 'Contacto'))
-    precio = db.Column(db.Numeric(7, 2))
-    disponible = db.Column(db.Boolean)
-    ordenes_compra = db.relationship('OrdenCompra', secondary=relacion_oc_p, back_populates='productos')
-
-class OrdenCompra(db.Model):
-    __tablename__ = 'orden_compra'
-    id = db.Column(db.Integer, primary_key=True)
-    total_global = db.Column(db.Numeric(9, 2))
-    fecha_compra = db.Column(db.DateTime)
-    productos = db.relationship('Producto', secondary=relacion_oc_p, back_populates='ordenes_compra')
-    ventas = db.relationship('Venta', secondary='relacion_v_oc', back_populates='ordenes_compra')
-
-class Venta(db.Model):
-    __tablename__ = 'venta'
-    id = db.Column(db.Integer, primary_key=True)
-    metodo_venta = db.Column(db.Boolean)
-    entrega = db.Column(db.DateTime)
-    cliente = db.Column(db.String(255))
-    telefono_cliente = db.Column(db.String(20))
-    id_sucursal = db.Column(db.Integer, db.ForeignKey('sucursal.id'))
-    sucursal = db.relationship('Sucursal')
-    ordenes_compra = db.relationship('OrdenCompra', secondary='relacion_v_oc', back_populates='ventas')
+from sqlalchemy.sql import text
+from db import app, db, Product, PurchaseOrder, Sale
 
 @app.route('/')
 def index():
@@ -72,6 +14,182 @@ def check_db():
     except Exception as e:
         print(f"Error connecting to the database: {e}")
         return jsonify({"message": "DB is not running", "error": str(e)}), 500
+
+# CRUD operations for Product
+
+# Create
+@app.route('/product', methods=['POST'])
+def create_product():
+    data = request.get_json()
+    new_product = Product(type=data['type'], price=data['price'], available=data['available'])
+    db.session.add(new_product)
+    db.session.commit()
+    return jsonify({"message": "Product created successfully"}), 201
+
+# Read
+@app.route('/product', methods=['GET'])
+def get_products():
+    products = Product.query.all()
+    return jsonify([{"id": product.id, "type": product.type, "price": product.price, "available": product.available} for product in products]), 200
+
+@app.route('/product/<int:id>', methods=['GET'])
+def get_product(id):
+    product = Product.query.get(id)
+    if product is None:
+        return jsonify({"message": "Product not found"}), 404
+    return jsonify({"id": product.id, "type": product.type, "price": product.price, "available": product.available}), 200
+
+# Update
+@app.route('/product/<int:id>', methods=['PUT'])
+def update_product(id):
+    data = request.get_json()
+    product = Product.query.get(id)
+    if product is None:
+        return jsonify({"message": "Product not found"}), 404
+    product.type = data['type']
+    product.price = data['price']
+    product.available = data['available']
+    db.session.commit()
+    return jsonify({"message": "Product updated successfully"}), 200
+
+# Delete
+@app.route('/product/<int:id>', methods=['DELETE'])
+def delete_product(id):
+    product = Product.query.get(id)
+    if product is None:
+        return jsonify({"message": "Product not found"}), 404
+    db.session.delete(product)
+    db.session.commit()
+    return jsonify({"message": "Product deleted successfully"}), 200
+
+# CRUD operations for PurchaseOrder
+
+# Create
+@app.route('/purchase_order', methods=['POST'])
+def create_purchase_order():
+    data = request.get_json()
+    new_purchase_order = PurchaseOrder(
+        total_global=data['total_global'], 
+        purchase_date=data['purchase_date'], 
+        products=[], 
+        sales=[]
+    )
+    db.session.add(new_purchase_order)
+    db.session.commit()
+    return jsonify({"message": "Purchase order created successfully"}), 201
+
+# Read
+@app.route('/purchase_order', methods=['GET'])
+def get_purchase_orders():
+    purchase_orders = PurchaseOrder.query.all()
+    return jsonify([{
+        "id": po.id, 
+        "total_global": po.total_global, 
+        "purchase_date": po.purchase_date
+    } for po in purchase_orders]), 200
+
+@app.route('/purchase_order/<int:id>', methods=['GET'])
+def get_purchase_order(id):
+    purchase_order = PurchaseOrder.query.get(id)
+    if purchase_order is None:
+        return jsonify({"message": "Purchase order not found"}), 404
+    return jsonify({
+            "id": purchase_order.id, 
+            "total_global": purchase_order.total_global, 
+            "purchase_date": purchase_order.purchase_date
+        }), 200
+
+# Update
+@app.route('/purchase_order/<int:id>', methods=['PUT'])
+def update_purchase_order(id):
+    data = request.get_json()
+    purchase_order = PurchaseOrder.query.get(id)
+    if purchase_order is None:
+        return jsonify({"message": "Purchase order not found"}), 404
+    purchase_order.total_global = data['total_global']
+    purchase_order.purchase_date = data['purchase_date']
+    db.session.commit()
+    return jsonify({"message": "Purchase order updated successfully"}), 200
+
+# Delete
+@app.route('/purchase_order/<int:id>', methods=['DELETE'])
+def delete_purchase_order(id):
+    purchase_order = PurchaseOrder.query.get(id)
+    if purchase_order is None:
+        return jsonify({"message": "Purchase order not found"}), 404
+    db.session.delete(purchase_order)
+    db.session.commit()
+    return jsonify({"message": "Purchase order deleted successfully"}), 200
+
+# CRUD operations for Sale
+
+# Create
+@app.route('/sale', methods=['POST'])
+def create_sale():
+    data = request.get_json()
+    new_sale = Sale(
+        sales_method=data['sales_method'], 
+        delivery=data['delivery'], 
+        client=data['client'], 
+        phone_number_client=data['phone_number_client'], 
+        id_branch=data['id_branch'], 
+        purchase_orders=[]
+    )
+    db.session.add(new_sale)
+    db.session.commit()
+    return jsonify({"message": "Sale created successfully"}), 201
+
+# Read
+@app.route('/sale', methods=['GET'])
+def get_sales():
+    sales = Sale.query.all()
+    return jsonify([{
+        "id": sale.id, 
+        "sales_method": sale.sales_method, 
+        "delivery": sale.delivery, 
+        "client": sale.client, 
+        "phone_number_client": sale.phone_number_client, 
+        "id_branch": sale.id_branch
+    } for sale in sales]), 200
+
+@app.route('/sale/<int:id>', methods=['GET'])
+def get_sale(id):
+    sale = Sale.query.get(id)
+    if sale is None:
+        return jsonify({"message": "Sale not found"}), 404
+    return jsonify({
+        "id": sale.id, 
+        "sales_method": sale.sales_method, 
+        "delivery": sale.delivery, 
+        "client": sale.client, 
+        "phone_number_client": sale.phone_number_client, 
+        "id_branch": sale.id_branch
+    }), 200
+
+# Update
+@app.route('/sale/<int:id>', methods=['PUT'])
+def update_sale(id):
+    data = request.get_json()
+    sale = Sale.query.get(id)
+    if sale is None:
+        return jsonify({"message": "Sale not found"}), 404
+    sale.sales_method = data['sales_method']
+    sale.delivery = data['delivery']
+    sale.client = data['client']
+    sale.phone_number_client = data['phone_number_client']
+    sale.id_branch = data['id_branch']
+    db.session.commit()
+    return jsonify({"message": "Sale updated successfully"}), 200
+
+# Delete
+@app.route('/sale/<int:id>', methods=['DELETE'])
+def delete_sale(id):
+    sale = Sale.query.get(id)
+    if sale is None:
+        return jsonify({"message": "Sale not found"}), 404
+    db.session.delete(sale)
+    db.session.commit()
+    return jsonify({"message": "Sale deleted successfully"}), 200
 
 if __name__ == '__main__':
     with app.app_context():
